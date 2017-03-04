@@ -1,0 +1,312 @@
+#! /bin/bash
+#
+#U NAME
+#U    setupOracleRACserver - Configure server for Oracle on bare-metal redhat 6
+#U
+#U SYNOPSIS
+#U    setupOracleRACserver
+#U
+#U DESCRIPTION
+#U    Configure server for Oracle RAC.  It is assumed server is RedHat 6
+#U    SAMPLE script.  Do not use as is.  Not meant for "copy/paste" Admins.
+#U
+#U OPTIONS
+#U    NONE
+#U
+#
+# History
+#     Raymond Tai - Feb 23, 2017 - Initial Implementation
+#
+function usage() {
+# usage - Any comment in script starting with '#U' will show up in "usage"
+  egrep "^#U" $0 | sed -e 's/^#U //g' -e 's/^#U//g'
+  exit 1
+}
+
+function timestamp() {
+  date +"%F %T"
+}
+
+function logMessage() {
+  echo $(timestamp) - $1
+}
+
+function logSection() {
+  logMessage "-------------------------------------------"
+  logMessage "$1"
+  logMessage "-------------------------------------------"
+}
+
+function onErrorExit() {
+# onErrorExit - if status is non-zero print message and exit
+  local status=$1
+  local message=${2:-Exiting due to unexpected status code ${status}}
+  if [ ${_status} -ne 0 ]; then
+     logSection $2
+     exit 998
+  fi
+}
+
+{ set +x; } 2>/dev/null
+logSection "$0 Setup"
+{ set -x; } 2>/dev/null
+HOSTIP=$(egrep ^IPADDR= /etc/sysconfig/network-scripts/ifcfg-eth2 | cut -d'=' -f2)
+HOSTNAME=$(hostname | cut -d'.' -f1)
+HOSTNAME_UC=${HOSTNAME^^}
+HOSTNAME_LC=${HOSTNAME,,}
+
+setup_base_pkgs() {
+  local _pkgs
+  _pkgs=$(cat <<-EOF | egrep -v "^#|^$" | paste -s -d' ' -
+# BASE OS
+bind-utils
+net-tools
+nmap
+sssd
+traceroute
+
+# VNC
+tigervnc-server
+
+# NFS
+nfs-utils
+rpcbind
+
+# iSCSI
+iscsi-initiator-utils
+device-mapper-multipath
+device-mapper-multipath-libs
+
+# Misc
+ed
+gdk-pixbuf2
+gtk2
+poppler-data
+psmisc
+rsync
+time
+
+# Oracle tuning
+tuned
+tuned-profiles-oracle
+
+# Oracle base
+cloog-ppl
+compat-libcap1
+compat-libstdc++-33
+cpp
+gcc
+gcc-c++
+glibc-devel
+glibc-headers
+kernel-headers
+ksh
+libaio-devel
+libdmx
+libstdc++-devel
+libXmu
+libXt
+libXv
+libXxf86dga
+libXxf86vm
+make
+mpfr
+ppl
+xorg-x11-utils
+xorg-x11-xauth
+EOF
+)
+
+  yum -y install ${_pkgs}
+  yum -y groupinstall "X Window System" "Fonts"
+
+  wget -O /tmp/$$.epel.rpm http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm
+  yum -y install /tmp/$$.epel.rpm
+  _pkgs=$(cat <<-EOF | egrep -v "^#|^$" | paste -s -d' ' -
+# Base Utils
+rlwrap
+htop
+atop
+EOF
+)
+  yum -y install ${_pkgs}
+}
+
+setup_disable_NetworkManager() {
+  service NetworkManager stop
+  chkconfig --del NetworkManager
+  yum -y remove NetworkManager
+}
+
+setup_etc_hosts() {
+  sed "/^${HOSTIP}/d" /etc/hosts > /tmp/$$.etc-hosts
+  cat <<-EOF >> /tmp/$$.etc-hosts
+${HOSTIP} ${HOSTNAME_LC}.<domain name goes here> ${HOSTNAME_LC}
+EOF
+
+  cp /etc/hosts /tmp/$$.etc-hosts.bak
+  cp /tmp/$$.etc-hosts /etc/hosts
+}
+
+setup_hostname() {
+  hostname ${HOSTNAME_LC}.<domain name goes here>
+  cp /etc/sysconfig/network /tmp/$$.etc-sysconfig-network
+  cat <<-EOF > /etc/sysconfig/network
+NETWORKING=yes
+HOSTNAME=${HOSTNAME_LC}.<domain name goes here>
+GATEWAY=
+# Recommended value for NOZEROCONF
+NOZEROCONF=yes
+EOF
+}
+
+setup_resolv_conf() {
+  cat <<-EOF > /etc/resolv.conf
+search <domain name goes here>
+nameserver <DNS IP goes here>
+nameserver <DNS IP goes here>
+EOF
+}
+
+setup_histtimeformat() {
+  cat <<-EOF > /etc/profile.d/histtimeformat.sh
+export HISTTIMEFORMAT='%F %T '
+EOF
+  chmod 644 /etc/profile.d/histtimeformat.sh
+}
+
+setup_tune_oracle() {
+  sed -ie 's/^#SYSCTL_POST/SYSCTL_POST/' /etc/tune-profiles/oracle/ktune.sysconfig
+  tuned-adm profile oracle
+
+  touch /etc/sysctl.d/50-oracle
+  chmod 644 /etc/sysctl.d/50-oracle
+  cat <<-EOF > /etc/sysctl.d/50-oracle
+fs.aio-max-nr = 1048576
+fs.file-max = 6815744
+kernel.core_uses_pid = 1
+kernel.msgmax = 65536
+kernel.msgmnb = 65536
+kernel.panic_on_oops = 1
+kernel.sem = 250        32000   100     128
+kernel.shmall = 4294967296
+kernel.shmmax = 68719476736
+kernel.shmmni = 4096
+kernel.sysrq = 0
+net.core.rmem_default = 262144
+net.core.rmem_max = 4194304
+net.core.wmem_default = 262144
+net.core.wmem_max = 1048576
+EOF
+}
+
+setup_disable_ipv6() {
+  touch /etc/sysctl.d/30-disable-ipv6
+  chmod 644 /etc/sysctl.d/30-disable-ipv6
+  cat <<-EOF > /etc/sysctl.d/30-disable-ipv6
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+EOF
+}
+
+setup_oracle_user() {
+  groupadd -g 10001 oinstall
+  groupadd -g 10002 dba
+  groupadd -g 10003 asmdba
+  groupadd -g 10004 asmadmin
+  useradd -c "oracle" -d /home/oracle -m -s /bin/bash -g oinstall -G dba,asmdba,asmadmin -u 20002 oracle
+  useradd -c "grid" -d /home/grid -m -s /bin/bash -g oinstall -G dba,asmdba,asmadmin -u 20001 grid
+
+  mkdir -m 700 /home/oracle/.ssh
+  chown oracle:oinstall /home/oracle/.ssh
+  touch /home/oracle/.ssh/authorized_keys
+  chown oracle:oinstall /home/oracle/.ssh/authorized_keys
+  chmod 600 /home/oracle/.ssh/authorized_keys
+
+  mkdir -m 700 /home/grid/.ssh
+  chown oracle:oinstall /home/grid/.ssh
+  touch /home/grid/.ssh/authorized_keys
+  chown oracle:oinstall /home/grid/.ssh/authorized_keys
+  chmod 600 /home/grid/.ssh/authorized_keys
+}
+
+setup_oracle_passwd() {
+  cp /etc/shadow /tmp/$$.etc-shadow
+  chmod 600 /tmp/$$.etc-shadow
+  sed -i '/^grid/d' /etc/shadow
+  sed -i '/^oracle/d' /etc/shadow
+  cat <<-EOF >> /etc/shadow
+grid:<encrypted passwd goes here. remember to escape out '$' with '\'>:16909:0:99999:7:::
+oracle:<encrypted passwd goes here. remember to escape out '$' with '\'>:16909:0:99999:7:::
+EOF
+}
+
+setup_oracle_rlwrap() {
+  cat <<- EOF > /etc/profile.d/sqlplus.sh
+alias sqlplus="rlwrap sqlplus"
+EOF
+  chmod 644 /etc/profile.d/sqlplus.sh
+}
+
+setup_oracle_bash_profile() {
+  touch /home/oracle/.bash_profile
+  chown oracle:dba /home/oracle/.bash_profile
+  cat <<- EOF > /home/oracle/.bash_profile
+# .bash_profile
+
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+        . ~/.bashrc
+fi
+
+# User specific environment and startup programs
+export ORACLE_SID=<SID goes here>
+export ORACLE_HOME=/orabase/app/oracle/product/12102/dbhome_1
+PATH=$PATH:$HOME/bin:$ORACLE_HOME/bin
+
+export PATH
+set -o vi
+
+. /orabase/app/oracle/local/natbin/TKExtensions
+EOF
+}
+
+setup_sssd() {
+  chkconfig sssd on --level 345
+}
+
+setup_limits() {
+  cp /etc/security/limits.conf /tmp/$$.etc-security-limits.conf
+  sed -i '/^grid .*hard/d' /etc/security/limits.conf
+  sed -i '/^grid .*soft/d' /etc/security/limits.conf
+  sed -i '/^oracle .*hard/d' /etc/security/limits.conf
+  sed -i '/^oracle .*soft/d' /etc/security/limits.conf
+  cat <<- EOF >> /etc/security/limits.conf
+grid  hard  nofile  65536
+grid  soft  nproc  2047
+oracle  hard  memlock  59343452
+oracle  soft  nproc  2047
+EOF
+}
+
+setup_ntp() {
+  cat <<-EOF > /etc/sysconfig/ntpd
+# Drop root to id 'ntp:ntp' by default.
+OPTIONS="-x -u ntp:ntp -p /var/run/ntpd.pid -g"
+EOF
+}
+
+{ set +x; } 2>/dev/null
+logSection "$0 Main"
+{ set -x; } 2>/dev/null
+setupSequence=${1:-setup_disable_NetworkManager setup_base_pkgs setup_hostname setup_etc_hosts setup_resolv_conf setup_histtimeformat setup_disable_ipv6 setup_tune_oracle setup_limits setup_ntp setup_oracle_user setup_oracle_passwd setup_oracle_rlwrap setup_oracle_bash_profile setup_sssd}
+
+for i in ${setupSequence}; do
+  { set +x; } 2>/dev/null
+  logSection $i
+  { set -x; } 2>/dev/null
+  $i
+done
+
+{ set +x; } 2>/dev/null
+logSection "$0 Done"

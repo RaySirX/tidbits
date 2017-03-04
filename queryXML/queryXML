@@ -1,0 +1,3 @@
+#! /bin/bash
+
+xsltproc --param "varPath" ${2:-none} queryXML.xslt ${1:-none}

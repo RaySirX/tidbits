@@ -41,7 +41,7 @@ function onErrorExit() {
 # onErrorExit - if status is non-zero print message and exit
   local status=$1
   local message=${2:-Exiting due to unexpected status code ${status}}
-  if [ ${_status} -ne 0 ]; then
+  if [ ${status} -ne 0 ]; then
      logSection $2
      exit 998
   fi

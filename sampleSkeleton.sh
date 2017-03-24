@@ -4,7 +4,7 @@
 #U    sampleSkeleton.sh - Sample skeleton script
 #U
 #U SYNOPSIS
-#U    0-ProdBundleADS.sh <mandatory> [optional]
+#U    sampleSkeleton.sh <mandatory> [optional]
 #U
 #U DESCRIPTION
 #U    What's the use case of this script?

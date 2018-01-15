@@ -48,6 +48,33 @@ function onErrorExit() {
 }
 
 #
+# parse arguments
+#
+TEMP=`getopt -o u:v:x --long upgrade:,--version:,--noDE -n 'installDE' -- "$@"`
+if [ $? != 0 ] ; then
+   usage
+   exit 1
+fi
+eval set -- "$TEMP"
+
+while true ; do
+  case "$1" in
+    -u|--upgrade) instance=$2
+        action=--upgrade
+        shift 2
+        ;;
+    -v|--version) version=$2
+        shift 2
+        ;;
+    -x|--noDE) noDE=1
+        shift
+        ;;
+    --) shift ; break ;;
+    *) usage; exit 1 ;;
+  esac
+done
+
+#
 # Check initial conditions, arguments, san
 #
 if [ "${checkCondition}" = "Unknown" ]; then
